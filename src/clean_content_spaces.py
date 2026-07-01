@@ -16,16 +16,26 @@ JSON_PATH = os.path.join(BASE_DIR, "gplAll_1150630.json")
 DB_PATH = os.path.join(BASE_DIR, "gpl.db")
 
 def is_cjk_or_punctuation(c):
-    """判斷字元是否為 CJK 中文字、中文標點或中文數字 〇/○"""
+    """判斷字元是否為 CJK 中文字（含擴展/相容字區）、中文全形標點符號"""
     if not c:
         return False
-    # 中文字範圍
-    if '\u4e00' <= c <= '\u9fa5' or c == '〇' or c == '○':
+    cp = ord(c)
+    # CJK Unified Ideographs & Extension A
+    if 0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF:
         return True
-    # 常見中文標點與數字關聯字
-    if c in ['，', '。', '、', '；', '：', '？', '！', '（', '）', '「', '」', '『', '』', '—', '～', '第', '號', '年', '月', '日', '元']:
+    # CJK Symbols and Punctuation (excluding U+3000 ideographic space)
+    if 0x3000 <= cp <= 0x303F:
+        return cp != 0x3000
+    # Fullwidth Forms (excluding fullwidth English letters and numbers)
+    if 0xFF00 <= cp <= 0xFFEF:
+        if (0xFF10 <= cp <= 0xFF19) or (0xFF21 <= cp <= 0xFF3A) or (0xFF41 <= cp <= 0xFF5A):
+            return False
+        return True
+    # CJK Compatibility Ideographs
+    if 0xF900 <= cp <= 0xFAFF:
         return True
     return False
+
 
 def replace_zeros_contextual(text):
     """
@@ -70,34 +80,36 @@ def clean_spaces(text):
     - 縮減中英數邊界的連續空格為單一空格
     - 最後署名（如 主任委員 陳金德）在職稱與姓名間僅保留一空格，且姓名無空格。
     """
-    # 1. 識別並提取公文最末端的署名
-    sig_pattern = re.compile(
-        r'(主任委員|副主任委員|院長|部長|署長|召集人|副召集人)\s*([\u4e00-\u9fa5\s〇○O0]{2,12})$'
-    )
-    
-    match_sig = sig_pattern.search(text)
+    # 1. 識別並提取最後署名（使用 rightmost title 搜尋，支援單字姓名）
+    titles = ["主任委員", "副主任委員", "院長", "部長", "署長", "召集人", "副召集人"]
+    rightmost_title = None
+    rightmost_idx = -1
+    for t in titles:
+        idx = text.rstrip().rfind(t)
+        if idx > rightmost_idx:
+            rightmost_idx = idx
+            rightmost_title = t
+            
     sig_text = ""
-    if match_sig:
-        title = match_sig.group(1)
-        name_part = match_sig.group(2)
-        
-        # 清理姓名部分：移除所有空格，並將 0/O/○ 轉為 〇
-        cleaned_name = name_part.replace(" ", "").replace("　", "")
-        cleaned_name = cleaned_name.replace("○", "〇")
-        cleaned_name = re.sub(r'[0O]', '〇', cleaned_name)
-        
-        sig_text = f"{title} {cleaned_name}"
-        # 暫時將署名從內文中切離，避免干擾主要內文的空格清理
-        text = text[:match_sig.start()].rstrip()
+    if rightmost_idx != -1:
+        name_part = text.rstrip()[rightmost_idx + len(rightmost_title):]
+        stripped_name = name_part.strip().replace(" ", "").replace("　", "")
+        # 判定剩餘長度是否合理，且僅包含中文/圈號/0/O/相容字區
+        if 1 <= len(stripped_name) <= 10 and re.match(r'^[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff〇○O0]+$', stripped_name):
+            # 清理名字並標準化字元
+            cleaned_name = stripped_name.replace("○", "〇")
+            cleaned_name = re.sub(r'[0O]', '〇', cleaned_name)
+            
+            sig_text = f"{rightmost_title} {cleaned_name}"
+            text = text[:rightmost_idx].rstrip()
 
-    # 2. 移除中文字與標點之間的空格
-    cjk_char = r'[\u4e00-\u9fa5\u3007〇○]'
-    cjk_punc = r'[，。、；：？！（）「」『』—～]'
+    # 2. 移除中文字元（含擴展、相容漢字）與標點間的空格
+    cjk_char = r'[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3007〇○]'
+    cjk_punc = r'[，。、；：？！（）「」『』—～【】〈〉｛｝．]'
     cjk_or_punc = f'(?:{cjk_char}|{cjk_punc})'
     
-    # 循環替代，確保處理陳 金 德等多個字間空格
     while True:
-        new_text = re.sub(f'({cjk_or_punc})\s+({cjk_or_punc})', r'\1\2', text)
+        new_text = re.sub(f'({cjk_or_punc})\\s+({cjk_or_punc})', r'\1\2', text)
         if new_text == text:
             break
         text = new_text
@@ -110,6 +122,7 @@ def clean_spaces(text):
         text = f"{text} {sig_text}"
         
     return text.strip()
+
 
 def clean_data():
     if not os.path.exists(JSON_PATH):
