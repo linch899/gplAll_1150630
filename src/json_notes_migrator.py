@@ -18,10 +18,11 @@ PREFIX_CLEANER = re.compile(
     r"^(?:備註|附註|補充備註|註記|附記|補充說明|【註】|\[註\]|（註）|\(註\)|【註[0-9一二三四五]】|\[註[0-9]\]|註[0-9一二三四五]?|註」)[:：\s.．。]+"
 )
 
-# 用於在內文中尋找備註標頭的正規表達式 (新增 「註」與「註[0-9]」形式)
+# 用於在內文中尋找備註標頭的正規表達式 (新增選用括號匹配如 【備註】)
 NOTE_HEADER_PATTERN = re.compile(
-    r"(?:【註】|\[註\]|（註）|\(註\)|「註」|【註[0-9一二三四五]】|\[註[0-9]\]|「註[0-9一二三四五]」|備註|附註|補充備註|註記|附記|補充說明|註[0-9一二三四五]?|註」)(?:[:：\s.．。]*|$)"
+    r"[【\[（\(「]?(?:備註|附註|補充備註|註記|附記|補充說明|註[0-9一二三四五]?|註」)[】\]）\)」]?(?:[:：\s.．。]*|$)"
 )
+
 
 
 # 用於在署名後方識別備註的簽章正規表達式
@@ -29,14 +30,15 @@ SIG_PATTERN = re.compile(r"(?:主任委員|院長|部長|署長)\s*[\u4e00-\u9fa
 
 STOP_INDICATORS = ["停止適用", "不再援用"]
 
-# 支援字間空格的公文大口標頭 Regex
+# 支援字間空格的公文大口標頭 Regex (針對"說明"加入負向後瞻)
 HEADER_PATTERNS = {
     "主旨": re.compile(r"主\s*旨\s*[:：]"),
-    "說明": re.compile(r"說\s*明\s*[:：]"),
+    "說明": re.compile(r"(?<!補充)(?<!附註)(?<!特別)(?<!詳細)說\s*明\s*[:：]"),
     "辦法": re.compile(r"辦\s*法\s*[:：]"),
     "正本": re.compile(r"正\s*本\s*[:：]"),
     "副本": re.compile(r"副\s*本\s*[:：]")
 }
+
 
 def clean_note_text(text):
     """清理備註文字：去字頭、簡繁轉換、去編號與首尾空白"""
@@ -85,27 +87,28 @@ def is_valid_note_header(match, text):
     """
     安全性檢查：驗證匹配到的「備註/補充說明」是否為內文句子中的普通關鍵字。
     - 括號類顯式標頭 (如 【註】、[註]、「註」) 直接判定為有效。
+    - 包含冒號者亦直接視為有效 (如 註: 備註：)
     - 否則 (如：補充說明、備註)，若後續接有「乙案」、「說明」等，判定為無效。
     """
     start = match.start()
     matched_text = match.group(0)
     
-    # 1. 括號類顯式標頭直接判定有效
+    # 1. 括號類開頭直接判定有效
     if any(b in matched_text for b in ['【', '[', '「', '（', '(']):
         return True
         
-    # 2. 普通文字類進行安全排除
+    # 2. 如果包含冒號，也視為顯式標頭，直接判定有效
+    if '：' in matched_text or ':' in matched_text:
+        return True
+        
+    # 3. 普通文字類進行安全排除
     after_text = text[start + len(matched_text):start + len(matched_text) + 15]
     if any(k in after_text for k in ["乙案", "辦理", "規定", "部分條文", "事項", "如下", "內容", "作法", "程序"]):
         return False
         
-    # 3. 備註標頭應在行首或前置標點符號後
-    if start > 0:
-        prev_char = text[start - 1]
-        if prev_char not in ['\n', ' ', '\r', '\t', '。', '；', ';', '、', '：', ':']:
-            return False
-            
     return True
+
+
 
 
 def extract_notes_from_content(content):
@@ -124,9 +127,15 @@ def extract_notes_from_content(content):
             # 必須為有效備註且長度在合理範圍內
             if (match_note and is_valid_note_header(match_note, prefix_part)) or any(si in prefix_part for si in STOP_INDICATORS):
                 if len(prefix_part) < 300:
-                    moved_notes.append(prefix_part)
-                    cleaned_content = content_strip[主旨_idx:].strip()
-                    content_strip = cleaned_content  # 更新後續比對內容
+                    # 檢查是否為空備註
+                    note_content = prefix_part
+                    if match_note:
+                        note_content = prefix_part[match_note.end():]
+                    note_content_clean = re.sub(r'^[:：\s.．。]+', '', note_content).strip()
+                    if len(note_content_clean) > 2:
+                        moved_notes.append(prefix_part)
+                        cleaned_content = content_strip[主旨_idx:].strip()
+                        content_strip = cleaned_content  # 更新後續比對內容
                     
     # --- 2. 抽取署名或正/副本後備註 (Suffix Notes) ---
     last_section_idx = -1
@@ -153,10 +162,17 @@ def extract_notes_from_content(content):
     if valid_match:
         m_start = valid_match.start()
         note_block = suffix_part[m_start:].strip()
-        moved_notes.append(note_block)
-        cleaned_content = content_strip[:last_section_idx + m_start].strip()
+        
+        # 驗證備註是否包含實質內容（非空備註）
+        matched_header = valid_match.group(0)
+        note_content = note_block[len(matched_header):].strip()
+        note_content_clean = re.sub(r'^[:：\s.．。]+', '', note_content).strip()
+        
+        if len(note_content_clean) > 2:
+            moved_notes.append(note_block)
+            cleaned_content = content_strip[:last_section_idx + m_start].strip()
     else:
-        # 無顯式標頭，檢查署名後之語意備註
+        # 無顯式標頭，檢查署名後之語意備註 (Fallback)
         sig_matches = list(SIG_PATTERN.finditer(suffix_part))
         if sig_matches:
             last_sig = sig_matches[-1]
