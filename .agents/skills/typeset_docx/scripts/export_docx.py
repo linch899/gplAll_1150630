@@ -155,23 +155,58 @@ def add_letter_header(doc, agency, date_str, word_num):
     set_run_font(run, "微軟正黑體", size_pt=12, bold=True)
     return p
 
-def add_body_paragraph(doc, prefix, text, is_list_item=False):
+def get_list_level_and_indent(text):
+    """
+    Returns (level, left_indent_pt, first_line_indent_pt) based on the prefix of text.
+    Levels:
+    1: 一、, 二、, 三、
+    2: （一）, (一)
+    3: １、, 1.
+    4: （１）, (1)
+    """
+    # Level 1: 一、, 二、
+    if re.match(r"^[一二三四五六七八九十百]+、", text):
+        return 1, 36.1, -24.1
+        
+    # Level 2: （一）, (一)
+    if re.match(r"^[(（][一二三四五六七八九十]+[)）]", text):
+        matched = re.match(r"^[(（][一二三四五六七八九十]+[)）]", text).group(0)
+        inner = matched[1:-1].strip()
+        roc_years = {
+            "八八", "八九", "九十", "九一", "九二", "九三", "九四", "九五", "九六", "九七", "九八", "九九",
+            "一〇〇", "一〇O", "一百", "一〇一", "一〇二", "一〇三", "一〇四", "一〇五", "一〇六", "一〇七", "一〇八", "一〇九",
+            "一一〇", "一一一", "一一二", "一一三", "一一四", "一一五"
+        }
+        if inner not in roc_years:
+            return 2, 48.2, -34.0
+            
+    # Level 3: １、, 1.
+    if re.match(r"^[１２３４５６７８９０]+、", text):
+        return 3, 61.25, -19.85
+    if re.match(r"^\d+\.", text):
+        return 3, 59.55, -8.5
+        
+    # Level 4: （１）, (1)
+    if re.match(r"^[(（][１２３４５６７８９０\d]+[)）]", text):
+        return 4, 73.7, -19.85
+        
+    # Not a list item
+    return 0, 36.0, -36.0
+
+def add_body_paragraph(doc, prefix, text, left_indent_pt=36.0, first_line_indent_pt=-36.0):
     """Adds a PMingLiU formatted body paragraph with specific indents."""
     p = doc.add_paragraph(style="List Paragraph")
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     pf = p.paragraph_format
     
-    if is_list_item:
-        pf.left_indent = Pt(36)
-        pf.first_line_indent = Pt(-24)
-    else:
-        pf.left_indent = Pt(36)
-        pf.first_line_indent = Pt(-36)
+    pf.left_indent = Pt(left_indent_pt)
+    pf.first_line_indent = Pt(first_line_indent_pt)
         
     full_text = f"{prefix}{text}"
     run = p.add_run(full_text)
     set_run_font(run, "新細明體", size_pt=12)
     return p
+
 
 def add_remarks(doc, remarks_text):
     """Adds formatting for the remarks section at the end of a letter."""
@@ -323,36 +358,32 @@ def main():
             if seg_type == '主旨':
                 add_body_paragraph(doc, "主旨：", seg_text)
             elif seg_type in ['說明', '辦法']:
-                # Split by list markers
-                chunks = split_list_items(seg_text)
+                # Split by physical newlines
+                chunks = [c.strip() for c in seg_text.split('\n') if c.strip()]
                 if not chunks:
                     continue
                     
                 first_chunk = chunks[0]
+                level, left, first = get_list_level_and_indent(first_chunk)
                 
-                # Check if first chunk starts with list marker
-                if LIST_MARKER_PATTERN.match(first_chunk):
-                    # No intro text, first paragraph is just the title (說明：)
-                    add_body_paragraph(doc, f"{seg_type}：", "")
-                    # Subsequent are list items
+                if level > 0:
+                    # No intro text, first paragraph is just the header (e.g. 說明：)
+                    add_body_paragraph(doc, f"{seg_type}：", "", left_indent_pt=36.0, first_line_indent_pt=-36.0)
                     for chunk in chunks:
-                        add_body_paragraph(doc, "", chunk, is_list_item=True)
+                        lvl, l_in, f_in = get_list_level_and_indent(chunk)
+                        add_body_paragraph(doc, "", chunk, left_indent_pt=l_in, first_line_indent_pt=f_in)
                 else:
-                    # Has intro text
-                    add_body_paragraph(doc, f"{seg_type}：", first_chunk)
+                    # Has intro text, first chunk goes on same paragraph as header
+                    add_body_paragraph(doc, f"{seg_type}：", first_chunk, left_indent_pt=36.0, first_line_indent_pt=-36.0)
                     for chunk in chunks[1:]:
-                        add_body_paragraph(doc, "", chunk, is_list_item=True)
+                        lvl, l_in, f_in = get_list_level_and_indent(chunk)
+                        add_body_paragraph(doc, "", chunk, left_indent_pt=l_in, first_line_indent_pt=f_in)
             else: # '內文'
-                # Check if it has list markers
-                chunks = split_list_items(seg_text)
-                if len(chunks) > 1 or (chunks and LIST_MARKER_PATTERN.match(chunks[0])):
-                    # Output list chunks
-                    for idx_chunk, chunk in enumerate(chunks):
-                        is_list = LIST_MARKER_PATTERN.match(chunk) is not None
-                        add_body_paragraph(doc, "", chunk, is_list_item=is_list)
-                else:
-                    # Single paragraph text
-                    add_body_paragraph(doc, "", seg_text)
+                chunks = [c.strip() for c in seg_text.split('\n') if c.strip()]
+                for chunk in chunks:
+                    lvl, l_in, f_in = get_list_level_and_indent(chunk)
+                    add_body_paragraph(doc, "", chunk, left_indent_pt=l_in, first_line_indent_pt=f_in)
+
                     
         # Add Remarks
         remarks_field = item.get("廢止或補充之備註", "")
