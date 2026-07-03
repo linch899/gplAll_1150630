@@ -139,20 +139,13 @@ def parse_letter_content(content):
     return segments
 
 def split_segment_to_paragraphs(text):
-    """Splits a segment text into paragraphs by newline and further by Level 1 markers."""
+    """Splits a segment text into paragraphs by newline."""
     lines = text.split('\n')
     paragraphs = []
     for line in lines:
         line_str = line.strip()
-        if not line_str:
-            continue
-        # Split further ONLY on Level 1 markers (e.g. 一、, 二、)
-        # to handle cases where list items are concatenated without newlines.
-        chunks = re.split(r"(?=[一二三四五六七八九十百]+[、])", line_str)
-        for chunk in chunks:
-            chunk_str = chunk.strip()
-            if chunk_str:
-                paragraphs.append(chunk_str)
+        if line_str:
+            paragraphs.append(line_str)
     return paragraphs
 
 def add_heading_styled(doc, text, level):
