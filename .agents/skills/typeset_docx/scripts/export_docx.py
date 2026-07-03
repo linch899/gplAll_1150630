@@ -15,17 +15,38 @@ if sys.platform.startswith('win'):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-# Regex for parsing document contents
+# Regex for parsing document contents (using capturing groups to avoid variable-width lookbehinds)
 HEADER_PATTERNS = {
-    "主旨": re.compile(r"主\s*旨\s*[:：]"),
-    "說明": re.compile(r"說\s*明\s*[:：]"),
-    "辦法": re.compile(r"辦\s*法\s*[:：]"),
-    "正本": re.compile(r"正\s*本\s*[:：]"),
-    "副本": re.compile(r"副\s*本\s*[:：]")
+    "主旨": re.compile(r"(?:^|\n)(主\s*旨\s*[:：])"),
+    "說明": re.compile(r"(?:^|\n)(說\s*明\s*[:：])"),
+    "辦法": re.compile(r"(?:^|\n)(辦\s*法\s*[:：])"),
+    "正本": re.compile(r"(?:^|\n)(正\s*本\s*[:：])"),
+    "副本": re.compile(r"(?:^|\n)(副\s*本\s*[:：])")
 }
 
 SIG_PATTERN = re.compile(r"(?:主任委員|院長|部長|署長)\s*[\u4e00-\u9fa5\s]{2,8}$")
-LIST_MARKER_PATTERN = re.compile(r"^[一二三四五六七八九十百]+[、]")
+
+MAP_DIGITS = {
+    '0': '０', '1': '１', '2': '２', '3': '３', '4': '４',
+    '5': '５', '6': '６', '7': '７', '8': '８', '9': '９'
+}
+
+def convert_digits(match):
+    prefix = match.group(1) # either \n or empty string
+    inner = match.group(2)
+    converted_inner = "".join(MAP_DIGITS.get(c, c) for c in inner)
+    return f"{prefix}（{converted_inner}）"
+
+def convert_parentheses_and_digits(text):
+    """
+    Converts parentheses and digits to full-width format, but only if they are
+    immediately preceded by a newline character (\n) or at the start of the string.
+    """
+    # 1. Convert (一), (二) to （一）, （二） after newline or start of string
+    text = re.sub(r"(^|\n)\(([一二三四五六七八九十百]+)\)", r"\1（\2）", text)
+    # 2. Convert (1), (2) to （１）, （２） after newline or start of string
+    text = re.sub(r"(^|\n)\(([0-9０１２３４５６７８９]+)\)", convert_digits, text)
+    return text
 
 def set_run_font(run, font_name, size_pt=12, bold=False, color_rgb=None):
     """Sets Western and East Asian font name, size, bold and color on a run."""
@@ -53,7 +74,7 @@ def clean_signature_and_copies(text):
     for key in ["正本", "副本"]:
         match = HEADER_PATTERNS[key].search(text_strip)
         if match:
-            text_strip = text_strip[:match.start()].strip()
+            text_strip = text_strip[:match.start(1)].strip()
             
     # 2. Strip signature at the end if present
     match_sig = SIG_PATTERN.search(text_strip)
@@ -83,13 +104,19 @@ def parse_letter_content(content):
     Parses content field into a list of (segment_type, text) pairs.
     segment_type can be: '主旨', '說明', '辦法', or '內文'.
     """
+    # Normalize newlines
+    content = content.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Perform full-width conversion for line-start parentheses and numbers
+    content = convert_parentheses_and_digits(content)
+    
     cleaned = clean_signature_and_copies(content)
     
     # Find all header matches
     matches = []
     for key in ["主旨", "說明", "辦法"]:
         for match in HEADER_PATTERNS[key].finditer(cleaned):
-            matches.append((match.start(), match.end(), key))
+            matches.append((match.start(1), match.end(1), key))
             
     # Sort matches by start position
     matches.sort(key=lambda x: x[0])
@@ -111,11 +138,22 @@ def parse_letter_content(content):
         
     return segments
 
-def split_list_items(text):
-    """Splits text by Chinese list markers using lookahead."""
-    items = re.split(r"(?=[一二三四五六七八九十百]+[、])", text)
-    cleaned = [it.strip() for it in items if it.strip()]
-    return cleaned
+def split_segment_to_paragraphs(text):
+    """Splits a segment text into paragraphs by newline and further by Level 1 markers."""
+    lines = text.split('\n')
+    paragraphs = []
+    for line in lines:
+        line_str = line.strip()
+        if not line_str:
+            continue
+        # Split further ONLY on Level 1 markers (e.g. 一、, 二、)
+        # to handle cases where list items are concatenated without newlines.
+        chunks = re.split(r"(?=[一二三四五六七八九十百]+[、])", line_str)
+        for chunk in chunks:
+            chunk_str = chunk.strip()
+            if chunk_str:
+                paragraphs.append(chunk_str)
+    return paragraphs
 
 def add_heading_styled(doc, text, level):
     """Adds a Heading with Microsoft JhengHei, Bold, Red, and 24pt exact line spacing."""
@@ -158,19 +196,20 @@ def add_letter_header(doc, agency, date_str, word_num):
 def get_list_level_and_indent(text):
     """
     Returns (level, left_indent_pt, first_line_indent_pt) based on the prefix of text.
-    Levels:
-    1: 一、, 二、, 三、
-    2: （一）, (一)
-    3: １、, 1.
-    4: （１）, (1)
+    Alignments match '新版多層次排版範例.docx':
+    Level 1 (一、): Left 36.0, FirstLine -24.0
+    Level 2 (（一）): Left 48.2, FirstLine -34.0
+    Level 3 (１、): Left 61.25, FirstLine -19.85
+    Level 4 (（１）): Left 87.85, FirstLine -34.0
+    Level 0 (Normal): Left 36.0, FirstLine -36.0
     """
     # Level 1: 一、, 二、
     if re.match(r"^[一二三四五六七八九十百]+、", text):
-        return 1, 36.1, -24.1
+        return 1, 36.0, -24.0
         
     # Level 2: （一）, (一)
-    if re.match(r"^[(（][一二三四五六七八九十]+[)）]", text):
-        matched = re.match(r"^[(（][一二三四五六七八九十]+[)）]", text).group(0)
+    if re.match(r"^[(（][一二三四五六七八九十百]+[)）]", text):
+        matched = re.match(r"^[(（][一二三四五六七八九十百]+[)）]", text).group(0)
         inner = matched[1:-1].strip()
         roc_years = {
             "八八", "八九", "九十", "九一", "九二", "九三", "九四", "九五", "九六", "九七", "九八", "九九",
@@ -180,15 +219,17 @@ def get_list_level_and_indent(text):
         if inner not in roc_years:
             return 2, 48.2, -34.0
             
-    # Level 3: １、, 1.
+    # Level 3: １、, 1、, 1.
     if re.match(r"^[１２３４５６７８９０]+、", text):
         return 3, 61.25, -19.85
+    if re.match(r"^\d+、", text):
+        return 3, 61.25, -19.85
     if re.match(r"^\d+\.", text):
-        return 3, 59.55, -8.5
+        return 3, 61.25, -19.85
         
     # Level 4: （１）, (1)
     if re.match(r"^[(（][１２３４５６７８９０\d]+[)）]", text):
-        return 4, 73.7, -19.85
+        return 4, 87.85, -34.0
         
     # Not a list item
     return 0, 36.0, -36.0
@@ -206,7 +247,6 @@ def add_body_paragraph(doc, prefix, text, left_indent_pt=36.0, first_line_indent
     run = p.add_run(full_text)
     set_run_font(run, "新細明體", size_pt=12)
     return p
-
 
 def add_remarks(doc, remarks_text):
     """Adds formatting for the remarks section at the end of a letter."""
@@ -287,7 +327,7 @@ def main():
             sys.exit(1)
 
     # 2. Initialize DOCX from template if it exists
-    template_path = r"D:\AI Workplace\antigravity\1150630_政府採購解釋函令前置作業\第一章\排版範例.docx"
+    template_path = r"D:\AI Workplace\antigravity\1150630_政府採購解釋函令前置作業\第一章\新版多層次排版範例.docx"
     if os.path.exists(template_path):
         print(f"Loading styles and page margins from template: {template_path}")
         doc = docx.Document(template_path)
@@ -358,8 +398,8 @@ def main():
             if seg_type == '主旨':
                 add_body_paragraph(doc, "主旨：", seg_text)
             elif seg_type in ['說明', '辦法']:
-                # Split by physical newlines
-                chunks = [c.strip() for c in seg_text.split('\n') if c.strip()]
+                # Split segment text by newlines and list items
+                chunks = split_segment_to_paragraphs(seg_text)
                 if not chunks:
                     continue
                     
@@ -379,11 +419,10 @@ def main():
                         lvl, l_in, f_in = get_list_level_and_indent(chunk)
                         add_body_paragraph(doc, "", chunk, left_indent_pt=l_in, first_line_indent_pt=f_in)
             else: # '內文'
-                chunks = [c.strip() for c in seg_text.split('\n') if c.strip()]
+                chunks = split_segment_to_paragraphs(seg_text)
                 for chunk in chunks:
                     lvl, l_in, f_in = get_list_level_and_indent(chunk)
                     add_body_paragraph(doc, "", chunk, left_indent_pt=l_in, first_line_indent_pt=f_in)
-
                     
         # Add Remarks
         remarks_field = item.get("廢止或補充之備註", "")
