@@ -390,7 +390,6 @@ def main():
     json_path = os.path.join(base_dir, "gplAll_1150630.json")
     
     output_json_path = os.path.join(base_dir, "第五章", "第五章.json")
-    output_alias_path = os.path.join(base_dir, "第五章", "第四章.json")
     output_log_path = os.path.join(base_dir, "第五章", "第五章比對紀錄.txt")
 
     print(f"Loading database from {json_path}...")
@@ -450,9 +449,6 @@ def main():
     print(f"Saving combined sorted Chapter 5 database to {output_json_path}...")
     os.makedirs(os.path.dirname(output_json_path), exist_ok=True)
     with open(output_json_path, "w", encoding="utf-8") as f:
-        json.dump(sorted_combined, f, ensure_ascii=False, indent=2)
-
-    with open(output_alias_path, "w", encoding="utf-8") as f:
         json.dump(sorted_combined, f, ensure_ascii=False, indent=2)
 
     print(f"Saving comparison log file to {output_log_path}...")
