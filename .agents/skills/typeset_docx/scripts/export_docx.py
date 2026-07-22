@@ -48,6 +48,16 @@ def convert_parentheses_and_digits(text):
     text = re.sub(r"(^|\n)\(([0-9０１２３４５６７８９]+)\)", convert_digits, text)
     return text
 
+def normalize_chinese_doc_number(match):
+    number_part = match.group(1)
+    normalized = number_part.replace('Ｏ', '〇').replace('０', '〇').replace('○', '〇')
+    return f"第{normalized}號"
+
+def normalize_chinese_doc_numbers(text):
+    # Regex to match 第 + [Chinese numerals and zero chars]+ + 號
+    pattern = re.compile(r"第([一二三四五六七八九十百千萬億零〇Ｏ０○廿卅]+)號")
+    return pattern.sub(normalize_chinese_doc_number, text)
+
 def set_run_font(run, font_name, size_pt=12, bold=False, color_rgb=None):
     """Sets Western and East Asian font name, size, bold and color on a run."""
     run.font.name = font_name
@@ -106,6 +116,9 @@ def parse_letter_content(content):
     """
     # Normalize newlines
     content = content.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Normalize Chinese document numbers
+    content = normalize_chinese_doc_numbers(content)
     
     # Perform full-width conversion for line-start parentheses and numbers
     content = convert_parentheses_and_digits(content)
@@ -175,10 +188,8 @@ def add_letter_header(doc, agency, date_str, word_num):
     # Format ROC Date
     roc_date = format_date_roc(date_str)
     
-    # Clean up word number (make sure it ends with 函 if needed)
+    # Clean up word number
     word_num = word_num.strip()
-    if word_num and not word_num.endswith("函") and "字第" in word_num:
-        word_num += "函"
         
     header_text = f"{agency}{roc_date}{word_num}"
     
