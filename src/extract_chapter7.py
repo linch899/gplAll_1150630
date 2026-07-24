@@ -21,6 +21,7 @@ def replace_chinese_digits(s):
 def get_match_key(s):
     if not s:
         return ""
+    s = s.replace('年', '年')
     s = re.sub(r'\s+', '', s)
     s = re.sub(r'[\(\)\-\[\]\{\}\uff08\uff09]', '', s)
     s = re.sub(r'(?:函|令)$', '', s)
@@ -30,12 +31,14 @@ def get_match_key(s):
     return s
 
 def clean_doc_id(doc_id):
+    doc_id = doc_id.replace('年', '年')
     doc_id = re.sub(r'.*?日', '', doc_id)
     doc_id = re.sub(r'第+', '第', doc_id)
     doc_id = doc_id.replace('第號', '第').strip()
     return doc_id
 
 def find_match(last_line, gpl_map_exact, gpl_map_norm):
+    last_line = last_line.replace('年', '年')
     raw_doc_id = clean_doc_id(last_line)
     std_doc_id = re.sub(r'\s+', '', raw_doc_id)
     
@@ -73,13 +76,17 @@ def get_date_val(item):
     except ValueError:
         return 0
 
-def extract_date(last_line):
-    match = re.search(r'(\d+)[年年]\s*(\d+)月\s*(\d+)日', last_line)
-    if match:
-        year = int(match.group(1))
-        month = int(match.group(2))
-        day = int(match.group(3))
-        return f"{year}{month:02d}{day:02d}"
+def extract_date(lines):
+    if isinstance(lines, str):
+        lines = [lines]
+    for line in reversed(lines):
+        line = line.replace('年', '年')
+        match = re.search(r'(\d+)\s*年\s*(\d+)\s*月\s*(\d+)\s*日', line)
+        if match:
+            year = int(match.group(1))
+            month = int(match.group(2))
+            day = int(match.group(3))
+            return f"{year}{month:02d}{day:02d}"
     return ""
 
 def parse_main_version(docx_path, gpl_map_exact, gpl_map_norm, comparison_log):
@@ -211,7 +218,7 @@ def parse_main_version(docx_path, gpl_map_exact, gpl_map_norm, comparison_log):
             subject = lines[0]
             subject = re.sub(r'^主旨：', '', subject)
             content = "\n".join(lines)
-            doc_date = extract_date(last_line)
+            doc_date = extract_date(lines)
             
             authority = "行政院公共工程委員會"
             for auth in ["內政部", "經濟部", "文化部", "法務部", "教育部", "原住民族委員會", "中華郵政股份有限公司", "行政院主計處", "財團法人台灣票據交換所"]:
@@ -380,7 +387,7 @@ def parse_new_version(docx_path, gpl_map_exact, gpl_map_norm, comparison_log):
             unmatched_count += 1
             placeholder_id = f"7-new-{unmatched_count:02d}"
             content = "\n".join(lines)
-            doc_date = extract_date(dispatch_line)
+            doc_date = extract_date(lines)
             subject = ""
             for line in lines:
                 if line.startswith("主旨："):
