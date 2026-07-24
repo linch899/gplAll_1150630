@@ -26,8 +26,7 @@ def get_match_key(s):
     s = re.sub(r'[\(\)\-\[\]\{\}\uff08\uff09]', '', s)
     s = re.sub(r'(?:函|令)$', '', s)
     s = replace_chinese_digits(s)
-    s = re.sub(r'第+', '第', s)
-    s = s.replace('第號', '第')
+    s = s.replace('第', '')
     return s
 
 def clean_doc_id(doc_id):
@@ -37,7 +36,7 @@ def clean_doc_id(doc_id):
     doc_id = doc_id.replace('第號', '第').strip()
     return doc_id
 
-def find_match(last_line, gpl_map_exact, gpl_map_norm):
+def find_match(last_line, gpl_map_exact, gpl_map_norm, gpl_map_digits=None):
     last_line = last_line.replace('年', '年')
     raw_doc_id = clean_doc_id(last_line)
     std_doc_id = re.sub(r'\s+', '', raw_doc_id)
@@ -51,16 +50,21 @@ def find_match(last_line, gpl_map_exact, gpl_map_norm):
             
     norm_word = get_match_key(last_line)
     if norm_word in gpl_map_norm:
-        return gpl_map_norm[norm_word][0], "歸一化精確比對", norm_word
+        return gpl_map_norm[norm_word][0], "歸一化模糊比對", norm_word
+
+    if gpl_map_digits:
+        digits = re.sub(r'\D+', '', raw_doc_id)
+        if len(digits) >= 6 and digits in gpl_map_digits:
+            return gpl_map_digits[digits][0], "純數字模糊比對", digits
 
     matched_entries = []
     for db_key, db_entries in gpl_map_norm.items():
-        if db_key and len(db_key) > 5 and (db_key in norm_word or norm_word in db_key):
+        if db_key and len(db_key) > 4 and (db_key in norm_word or norm_word in db_key):
             matched_entries.append((db_key, db_entries[0]))
             
     if matched_entries:
         matched_entries.sort(key=lambda x: len(x[0]), reverse=True)
-        return matched_entries[0][1], "歸一化模糊比對", matched_entries[0][0]
+        return matched_entries[0][1], "歸一化子字串比對", matched_entries[0][0]
         
     return None, "", ""
 
@@ -89,7 +93,7 @@ def extract_date(lines):
             return f"{year}{month:02d}{day:02d}"
     return ""
 
-def parse_main_version(docx_path, gpl_map_exact, gpl_map_norm, comparison_log):
+def parse_main_version(docx_path, gpl_map_exact, gpl_map_norm, gpl_map_digits, comparison_log):
     doc = docx.Document(docx_path)
     
     sections_in_doc = [
@@ -191,7 +195,7 @@ def parse_main_version(docx_path, gpl_map_exact, gpl_map_norm, comparison_log):
         doc_id = match.group(1) if match else last_line
         doc_id = clean_doc_id(doc_id)
         
-        db_match, method, matched_key = find_match(last_line, gpl_map_exact, gpl_map_norm)
+        db_match, method, matched_key = find_match(last_line, gpl_map_exact, gpl_map_norm, gpl_map_digits)
         
         if db_match:
             new_entry = json.loads(json.dumps(db_match))
@@ -260,7 +264,7 @@ def parse_main_version(docx_path, gpl_map_exact, gpl_map_norm, comparison_log):
             
     return extracted, unmatched_count
 
-def parse_new_version(docx_path, gpl_map_exact, gpl_map_norm, comparison_log):
+def parse_new_version(docx_path, gpl_map_exact, gpl_map_norm, gpl_map_digits, comparison_log):
     doc = docx.Document(docx_path)
     
     sections_in_doc = [
@@ -362,7 +366,7 @@ def parse_new_version(docx_path, gpl_map_exact, gpl_map_norm, comparison_log):
         doc_id = match.group(1) if match else dispatch_line
         doc_id = clean_doc_id(doc_id)
         
-        db_match, method, matched_key = find_match(dispatch_line, gpl_map_exact, gpl_map_norm)
+        db_match, method, matched_key = find_match(dispatch_line, gpl_map_exact, gpl_map_norm, gpl_map_digits)
         
         if db_match:
             new_entry = json.loads(json.dumps(db_match))
@@ -462,6 +466,7 @@ def main():
 
     gpl_map_exact = {}
     gpl_map_norm = {}
+    gpl_map_digits = {}
     for entry in gpl_data:
         doc_id = entry.get("發文字號", "").strip()
         if doc_id:
@@ -470,14 +475,18 @@ def main():
             norm_id = get_match_key(doc_id)
             gpl_map_norm.setdefault(norm_id, []).append(entry)
 
+            digits = re.sub(r'\D+', '', doc_id)
+            if len(digits) >= 6:
+                gpl_map_digits.setdefault(digits, []).append(entry)
+
     comparison_log = []
 
     print("Parsing main chapter 7 docx...")
-    main_entries, unmatched_main = parse_main_version(docx_path_main, gpl_map_exact, gpl_map_norm, comparison_log)
+    main_entries, unmatched_main = parse_main_version(docx_path_main, gpl_map_exact, gpl_map_norm, gpl_map_digits, comparison_log)
     print(f"Main Version completed. Extracted: {len(main_entries)}, Unmatched: {unmatched_main}")
 
     print("Parsing new 112.1 chapter 7 docx...")
-    new_entries, unmatched_new = parse_new_version(docx_path_new, gpl_map_exact, gpl_map_norm, comparison_log)
+    new_entries, unmatched_new = parse_new_version(docx_path_new, gpl_map_exact, gpl_map_norm, gpl_map_digits, comparison_log)
     print(f"New Version completed. Extracted: {len(new_entries)}, Unmatched: {unmatched_new}")
 
     combined = main_entries + new_entries
